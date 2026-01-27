@@ -1,3 +1,4 @@
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -57,8 +58,134 @@ if filtered.empty:
     st.warning("No data for the selected filters.")
     st.stop()
 
+st.sidebar.subheader("Seasonal view")
+monsoon_only = st.sidebar.toggle("Monsoon season only (Jul-Sep)", value=False)
+
+filtered = filtered.copy()
+filtered["month"] = filtered["date"].dt.month
+filtered_view = filtered.copy()
+if monsoon_only:
+    filtered_view = filtered_view[filtered_view["month"].between(7, 9)]
+    if filtered_view.empty:
+        st.warning("No data for the selected filters in monsoon months.")
+        st.stop()
+
+st.subheader("Summary Statistics")
+total_rainfall = filtered_view["rainfall_mm"].sum()
+avg_rainfall = filtered_view["rainfall_mm"].mean()
+max_rainfall = filtered_view["rainfall_mm"].max()
+min_rainfall = filtered_view["rainfall_mm"].min()
+
+summary_cols = st.columns(4)
+summary_cols[0].metric("Total rainfall (mm)", f"{total_rainfall:,.1f}")
+summary_cols[1].metric("Average rainfall (mm)", f"{avg_rainfall:,.1f}")
+summary_cols[2].metric("Maximum rainfall (mm)", f"{max_rainfall:,.1f}")
+summary_cols[3].metric("Minimum rainfall (mm)", f"{min_rainfall:,.1f}")
+
+st.subheader("Monthly Rainfall Over Time")
+line_chart = (
+    alt.Chart(filtered_view)
+    .mark_line()
+    .encode(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("rainfall_mm:Q", title="Rainfall (mm)"),
+        color=alt.Color("scenario:N", title="Scenario"),
+        detail="district_or_city:N",
+        tooltip=[
+            alt.Tooltip("district_or_city:N", title="City"),
+            alt.Tooltip("scenario:N", title="Scenario"),
+            alt.Tooltip("date:T", title="Date"),
+            alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
+        ],
+    )
+    .properties(height=320)
+)
+st.altair_chart(line_chart, use_container_width=True)
+
+st.subheader("Monthly Climatology")
+climatology = (
+    filtered_view.groupby(["scenario", "month"], as_index=False)["rainfall_mm"]
+    .mean()
+    .sort_values(["month", "scenario"])
+)
+climatology_chart = (
+    alt.Chart(climatology)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("month:O", title="Month"),
+        y=alt.Y("rainfall_mm:Q", title="Average rainfall (mm)"),
+        color=alt.Color("scenario:N", title="Scenario"),
+        tooltip=[
+            alt.Tooltip("scenario:N", title="Scenario"),
+            alt.Tooltip("month:O", title="Month"),
+            alt.Tooltip("rainfall_mm:Q", title="Average rainfall (mm)", format=".1f"),
+        ],
+    )
+    .properties(height=280)
+)
+st.altair_chart(climatology_chart, use_container_width=True)
+
+st.subheader("Monsoon Analysis (Jul-Sep)")
+monsoon_data = filtered[filtered["month"].between(7, 9)]
+if monsoon_data.empty:
+    st.info("No monsoon-season data for the selected filters.")
+else:
+    monsoon_total = monsoon_data["rainfall_mm"].sum()
+    monsoon_avg = monsoon_data["rainfall_mm"].mean()
+    monsoon_cols = st.columns(2)
+    monsoon_cols[0].metric("Monsoon total rainfall (mm)", f"{monsoon_total:,.1f}")
+    monsoon_cols[1].metric("Monsoon average rainfall (mm)", f"{monsoon_avg:,.1f}")
+
+    scenario_order = ["historical", "ssp245", "ssp585"]
+    available_scenarios = [s for s in scenario_order if s in monsoon_data["scenario"].unique()]
+    monsoon_summary = (
+        monsoon_data.groupby("scenario", as_index=False)["rainfall_mm"]
+        .agg(total_rainfall="sum", average_rainfall="mean")
+        .sort_values(
+            "scenario",
+            key=lambda series: pd.Categorical(
+                series, categories=available_scenarios, ordered=True
+            ),
+        )
+    )
+    monsoon_totals_chart = (
+        alt.Chart(monsoon_summary)
+        .mark_bar()
+        .encode(
+            x=alt.X("scenario:N", title="Scenario"),
+            y=alt.Y("total_rainfall:Q", title="Total rainfall (mm)"),
+            color=alt.Color("scenario:N", title="Scenario"),
+            tooltip=[
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip("total_rainfall:Q", title="Total rainfall (mm)", format=".1f"),
+            ],
+        )
+        .properties(height=240)
+    )
+    monsoon_avg_chart = (
+        alt.Chart(monsoon_summary)
+        .mark_bar()
+        .encode(
+            x=alt.X("scenario:N", title="Scenario"),
+            y=alt.Y("average_rainfall:Q", title="Average rainfall (mm)"),
+            color=alt.Color("scenario:N", title="Scenario"),
+            tooltip=[
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip(
+                    "average_rainfall:Q", title="Average rainfall (mm)", format=".1f"
+                ),
+            ],
+        )
+        .properties(height=240)
+    )
+    monsoon_chart_cols = st.columns(2)
+    with monsoon_chart_cols[0]:
+        st.altair_chart(monsoon_totals_chart, use_container_width=True)
+    with monsoon_chart_cols[1]:
+        st.altair_chart(monsoon_avg_chart, use_container_width=True)
+
 summary = (
-    filtered.groupby(["scenario", "province", "district_or_city"], as_index=False)[
+    filtered_view.groupby(["scenario", "province", "district_or_city"], as_index=False)[
         "rainfall_mm"
     ]
     .mean()
@@ -67,21 +194,5 @@ summary = (
 
 st.subheader("Average Monthly Rainfall (mm)")
 st.dataframe(summary, use_container_width=True, hide_index=True)
-
-st.subheader("Monthly Rainfall Over Time")
-chart_data = (
-    filtered.groupby(["date", "scenario", "district_or_city"], as_index=False)[
-        "rainfall_mm"
-    ]
-    .mean()
-)
-
-for scenario in scenarios:
-    scenario_data = chart_data[chart_data["scenario"] == scenario]
-    st.markdown(f"**{scenario.upper()}**")
-    pivot = scenario_data.pivot(
-        index="date", columns="district_or_city", values="rainfall_mm"
-    ).sort_index()
-    st.line_chart(pivot)
 
 st.caption("Sample data is synthetic and for demonstration only.")
