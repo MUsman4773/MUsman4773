@@ -3,6 +3,20 @@ import pandas as pd
 import streamlit as st
 
 DATA_PATH = "data/pakistan_rainfall_sample.csv"
+REQUIRED_COLUMNS = {
+    "date",
+    "province",
+    "district_or_city",
+    "scenario",
+    "rainfall_mm",
+}
+TEMPLATE_COLUMNS = [
+    "date",
+    "province",
+    "district_or_city",
+    "scenario",
+    "rainfall_mm",
+]
 
 st.set_page_config(page_title="Pakistan Rainfall Scenarios", layout="wide")
 
@@ -13,16 +27,71 @@ st.write(
 )
 
 @st.cache_data
-def load_data() -> pd.DataFrame:
-    data = pd.read_csv(DATA_PATH)
-    data["date"] = pd.to_datetime(data["date"], format="%Y-%m")
+def load_data_from_csv(file_or_path) -> pd.DataFrame:
+    data = pd.read_csv(file_or_path)
+    data.columns = [column.strip() for column in data.columns]
+    missing_columns = REQUIRED_COLUMNS - set(data.columns)
+    if missing_columns:
+        missing_list = ", ".join(sorted(missing_columns))
+        raise ValueError(f"Missing required columns: {missing_list}.")
+
+    date_series = data["date"]
+    try:
+        parsed_dates = pd.to_datetime(date_series, infer_datetime_format=True, errors="raise")
+    except (ValueError, TypeError):
+        parsed_ym = pd.to_datetime(date_series, format="%Y-%m", errors="coerce")
+        parsed_ymd = pd.to_datetime(date_series, format="%Y-%m-%d", errors="coerce")
+        parsed_dates = parsed_ym.fillna(parsed_ymd)
+
+    if parsed_dates.isna().any():
+        raise ValueError(
+            "Column 'date' must use YYYY-MM or YYYY-MM-DD format and be parseable."
+        )
+
+    data["date"] = parsed_dates
+    data["rainfall_mm"] = pd.to_numeric(data["rainfall_mm"], errors="coerce")
+    if data["rainfall_mm"].isna().any():
+        raise ValueError("Column 'rainfall_mm' must be numeric.")
+
     return data
 
 
+st.sidebar.header("Data source")
+data_source = st.sidebar.radio(
+    "Choose a data source",
+    options=("Use sample data", "Upload my CSV"),
+    index=0,
+)
+
+template_rows = [
+    ["1980-01", "Sindh", "Karachi", "historical", 12.5],
+    ["2050-07-01", "Punjab", "Lahore", "ssp245", 180.2],
+]
+template_df = pd.DataFrame(template_rows, columns=TEMPLATE_COLUMNS)
+st.sidebar.download_button(
+    "Download template CSV",
+    data=template_df.to_csv(index=False),
+    file_name="rainfall_template.csv",
+    mime="text/csv",
+)
+
 try:
-    df = load_data()
+    if data_source == "Upload my CSV":
+        uploaded_file = st.sidebar.file_uploader(
+            "Upload a CSV file",
+            type=["csv"],
+        )
+        if uploaded_file is None:
+            st.info("Upload a CSV file to continue.")
+            st.stop()
+        df = load_data_from_csv(uploaded_file)
+    else:
+        df = load_data_from_csv(DATA_PATH)
 except FileNotFoundError:
     st.error("Sample data not found. Run `python scripts/make_sample_data.py` first.")
+    st.stop()
+except ValueError as error:
+    st.error(str(error))
     st.stop()
 
 st.sidebar.header("Filters")
