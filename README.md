@@ -18,6 +18,26 @@ The generated dataset includes:
 - **Locations**: Karachi (Sindh), Lahore (Punjab), Peshawar (KPK), Quetta (Balochistan), Islamabad (ICT)
 - **Columns**: `date`, `province`, `district_or_city`, `scenario`, `rainfall_mm`
 
+## Upload your own CSV
+
+You can switch the sidebar **Data source** to **Upload my CSV** and select your own file.
+The app validates the file before loading; if there is an issue it will show an error and stop.
+
+### Required columns
+
+- `date`
+- `province`
+- `district_or_city`
+- `scenario`
+- `rainfall_mm`
+
+### Date formats
+
+The `date` column must be parseable as either:
+
+- `YYYY-MM` (monthly)
+- `YYYY-MM-DD` (daily)
+
 ## Run
 
 ```bash
