@@ -431,14 +431,44 @@ for group_name in selected_groups:
 
 if summary_rows:
     summary_table = pd.DataFrame(summary_rows)
-    st.dataframe(summary_table, use_container_width=True, hide_index=True)
+    ssp585_order = (
+        summary_table[summary_table["scenario"] == "SSP585"]
+        .sort_values("annual_change_pct", ascending=False)["group_name"]
+        .tolist()
+    )
+    if ssp585_order:
+        remaining_groups = [
+            name
+            for name in summary_table["group_name"].unique()
+            if name not in ssp585_order
+        ]
+        group_order = ssp585_order + remaining_groups
+        summary_table["group_name"] = pd.Categorical(
+            summary_table["group_name"], categories=group_order, ordered=True
+        )
+        summary_table = summary_table.sort_values(["group_name", "scenario"])
+
+    summary_table_display = summary_table.style.format(
+        {
+            "baseline_annual_mm": "{:.1f}",
+            "future_annual_mm": "{:.1f}",
+            "annual_change_mm": "{:.1f}",
+            "annual_change_pct": "{:.1f}",
+            "baseline_monsoon_mm": "{:.1f}",
+            "future_monsoon_mm": "{:.1f}",
+            "monsoon_change_mm": "{:.1f}",
+            "monsoon_change_pct": "{:.1f}",
+        }
+    )
+    st.dataframe(summary_table_display, use_container_width=True, hide_index=True)
 
     annual_chart = (
         alt.Chart(summary_table)
         .mark_bar()
         .encode(
-            x=alt.X("group_name:N", title="Group"),
-            y=alt.Y("annual_change_pct:Q", title="Annual change (%)"),
+            x=alt.X("group_name:N", title="Group", sort=None),
+            xOffset=alt.XOffset("scenario:N"),
+            y=alt.Y("annual_change_pct:Q", title="Annual change (%)", stack=None),
             color=alt.Color("scenario:N", title="Scenario"),
             tooltip=[
                 alt.Tooltip("group_name:N", title="Group"),
@@ -455,8 +485,9 @@ if summary_rows:
         alt.Chart(summary_table)
         .mark_bar()
         .encode(
-            x=alt.X("group_name:N", title="Group"),
-            y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)"),
+            x=alt.X("group_name:N", title="Group", sort=None),
+            xOffset=alt.XOffset("scenario:N"),
+            y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)", stack=None),
             color=alt.Color("scenario:N", title="Scenario"),
             tooltip=[
                 alt.Tooltip("group_name:N", title="Group"),
@@ -513,6 +544,7 @@ summary = (
 )
 
 st.subheader("Average Monthly Rainfall (mm)")
-st.dataframe(summary, use_container_width=True, hide_index=True)
+summary_display = summary.style.format({"rainfall_mm": "{:.1f}"})
+st.dataframe(summary_display, use_container_width=True, hide_index=True)
 
 st.caption("Sample data is synthetic and for demonstration only.")
