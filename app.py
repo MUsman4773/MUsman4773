@@ -37,7 +37,7 @@ def load_data_from_csv(file_or_path) -> pd.DataFrame:
 
     date_series = data["date"]
     try:
-        parsed_dates = pd.to_datetime(date_series, infer_datetime_format=True, errors="raise")
+        parsed_dates = pd.to_datetime(date_series, errors="raise")
     except (ValueError, TypeError):
         parsed_ym = pd.to_datetime(date_series, format="%Y-%m", errors="coerce")
         parsed_ymd = pd.to_datetime(date_series, format="%Y-%m-%d", errors="coerce")
@@ -54,6 +54,68 @@ def load_data_from_csv(file_or_path) -> pd.DataFrame:
         raise ValueError("Column 'rainfall_mm' must be numeric.")
 
     return data
+
+
+def compute_yearly_totals(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=["year", "rainfall_mm"])
+    yearly = (
+        df.assign(year=df["date"].dt.year)
+        .groupby("year", as_index=False)["rainfall_mm"]
+        .sum()
+    )
+    return yearly
+
+
+def compute_baseline_metrics(df_baseline: pd.DataFrame) -> dict:
+    data = df_baseline.copy()
+    data["month"] = data["date"].dt.month
+    annual_totals = compute_yearly_totals(data)
+    monsoon_totals = compute_yearly_totals(data[data["month"].between(7, 9)])
+    monthly_climatology = (
+        data.groupby("month")["rainfall_mm"].mean().reindex(range(1, 13))
+    )
+    return {
+        "annual_mean": annual_totals["rainfall_mm"].mean(),
+        "monsoon_mean": monsoon_totals["rainfall_mm"].mean(),
+        "monthly_climatology": monthly_climatology,
+    }
+
+
+def compute_future_metrics(df_future: pd.DataFrame) -> dict:
+    data = df_future.copy()
+    data["month"] = data["date"].dt.month
+    annual_totals = compute_yearly_totals(data)
+    monsoon_totals = compute_yearly_totals(data[data["month"].between(7, 9)])
+    monthly_climatology = (
+        data.groupby("month")["rainfall_mm"].mean().reindex(range(1, 13))
+    )
+    return {
+        "annual_mean": annual_totals["rainfall_mm"].mean(),
+        "monsoon_mean": monsoon_totals["rainfall_mm"].mean(),
+        "monthly_climatology": monthly_climatology,
+    }
+
+
+def summarize_changes(baseline: dict, future: dict) -> dict:
+    annual_change = future["annual_mean"] - baseline["annual_mean"]
+    monsoon_change = future["monsoon_mean"] - baseline["monsoon_mean"]
+    annual_pct = (
+        annual_change / baseline["annual_mean"] * 100
+        if baseline["annual_mean"]
+        else pd.NA
+    )
+    monsoon_pct = (
+        monsoon_change / baseline["monsoon_mean"] * 100
+        if baseline["monsoon_mean"]
+        else pd.NA
+    )
+    return {
+        "annual_change": annual_change,
+        "annual_pct": annual_pct,
+        "monsoon_change": monsoon_change,
+        "monsoon_pct": monsoon_pct,
+    }
 
 
 st.sidebar.header("Data source")
@@ -100,6 +162,11 @@ scenarios = st.sidebar.multiselect(
     options=sorted(df["scenario"].unique()),
     default=sorted(df["scenario"].unique()),
 )
+provinces = st.sidebar.multiselect(
+    "Province",
+    options=sorted(df["province"].unique()),
+    default=sorted(df["province"].unique()),
+)
 locations = st.sidebar.multiselect(
     "Location",
     options=sorted(df["district_or_city"].unique()),
@@ -118,6 +185,7 @@ start_date, end_date = st.sidebar.date_input(
 
 filtered = df[
     df["scenario"].isin(scenarios)
+    & df["province"].isin(provinces)
     & df["district_or_city"].isin(locations)
     & (df["date"] >= pd.to_datetime(start_date))
     & (df["date"] <= pd.to_datetime(end_date))
@@ -252,6 +320,189 @@ else:
         st.altair_chart(monsoon_totals_chart, use_container_width=True)
     with monsoon_chart_cols[1]:
         st.altair_chart(monsoon_avg_chart, use_container_width=True)
+
+st.subheader("Change vs Historical Baseline")
+compare_by = st.radio("Compare by", options=["City", "Province"], horizontal=True)
+future_periods = {
+    "2015-2044": (pd.Timestamp("2015-01-01"), pd.Timestamp("2044-12-31")),
+    "2045-2074": (pd.Timestamp("2045-01-01"), pd.Timestamp("2074-12-31")),
+    "2075-2100": (pd.Timestamp("2075-01-01"), pd.Timestamp("2100-12-31")),
+}
+future_label = st.selectbox("Future period", options=list(future_periods.keys()))
+future_start, future_end = future_periods[future_label]
+
+analysis_source = df[df["scenario"].isin(scenarios)].copy()
+if compare_by == "City":
+    group_column = "district_or_city"
+    selected_groups = locations
+    analysis_source = analysis_source[
+        analysis_source["district_or_city"].isin(selected_groups)
+        & analysis_source["province"].isin(provinces)
+    ]
+else:
+    group_column = "province"
+    selected_groups = provinces
+    analysis_source = analysis_source[analysis_source["province"].isin(selected_groups)]
+
+baseline_start = pd.Timestamp("1980-01-01")
+baseline_end = pd.Timestamp("2014-12-31")
+required_future_scenarios = ["ssp245", "ssp585"]
+
+summary_rows = []
+climatology_rows = []
+for group_name in selected_groups:
+    if compare_by == "City":
+        group_mask = analysis_source["district_or_city"] == group_name
+    else:
+        group_mask = analysis_source["province"] == group_name
+
+    group_data = analysis_source[group_mask]
+    baseline_data = group_data[
+        (group_data["scenario"] == "historical")
+        & (group_data["date"] >= baseline_start)
+        & (group_data["date"] <= baseline_end)
+    ]
+    future_data = group_data[
+        (group_data["scenario"].isin(required_future_scenarios))
+        & (group_data["date"] >= future_start)
+        & (group_data["date"] <= future_end)
+    ]
+
+    missing_future = [
+        scenario
+        for scenario in required_future_scenarios
+        if future_data[future_data["scenario"] == scenario].empty
+    ]
+    if baseline_data.empty or missing_future:
+        missing_parts = []
+        if baseline_data.empty:
+            missing_parts.append("historical baseline")
+        if missing_future:
+            missing_parts.append(f"future data for {', '.join(missing_future)}")
+        st.warning(
+            f"Skipping {group_name}: missing {' and '.join(missing_parts)} data."
+        )
+        continue
+
+    baseline_metrics = compute_baseline_metrics(baseline_data)
+    baseline_climatology = baseline_metrics["monthly_climatology"]
+    for month, rainfall in baseline_climatology.items():
+        climatology_rows.append(
+            {
+                "group_name": group_name,
+                "scenario": "historical",
+                "period": "Baseline",
+                "month": month,
+                "rainfall_mm": rainfall,
+            }
+        )
+
+    for scenario in required_future_scenarios:
+        scenario_future = future_data[future_data["scenario"] == scenario]
+        future_metrics = compute_future_metrics(scenario_future)
+        changes = summarize_changes(baseline_metrics, future_metrics)
+
+        summary_rows.append(
+            {
+                "group_name": group_name,
+                "scenario": scenario,
+                "baseline_annual_mm": baseline_metrics["annual_mean"],
+                "future_annual_mm": future_metrics["annual_mean"],
+                "annual_change_mm": changes["annual_change"],
+                "annual_change_pct": changes["annual_pct"],
+                "baseline_monsoon_mm": baseline_metrics["monsoon_mean"],
+                "future_monsoon_mm": future_metrics["monsoon_mean"],
+                "monsoon_change_mm": changes["monsoon_change"],
+                "monsoon_change_pct": changes["monsoon_pct"],
+            }
+        )
+
+        future_climatology = future_metrics["monthly_climatology"]
+        for month, rainfall in future_climatology.items():
+            climatology_rows.append(
+                {
+                    "group_name": group_name,
+                    "scenario": scenario,
+                    "period": "Future",
+                    "month": month,
+                    "rainfall_mm": rainfall,
+                }
+            )
+
+if summary_rows:
+    summary_table = pd.DataFrame(summary_rows)
+    st.dataframe(summary_table, use_container_width=True, hide_index=True)
+
+    annual_chart = (
+        alt.Chart(summary_table)
+        .mark_bar()
+        .encode(
+            x=alt.X("group_name:N", title="Group"),
+            y=alt.Y("annual_change_pct:Q", title="Annual change (%)"),
+            color=alt.Color("scenario:N", title="Scenario"),
+            tooltip=[
+                alt.Tooltip("group_name:N", title="Group"),
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip("annual_change_pct:Q", title="Annual change (%)", format=".1f"),
+                alt.Tooltip("annual_change_mm:Q", title="Annual change (mm)", format=".1f"),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(annual_chart, use_container_width=True)
+
+    monsoon_chart = (
+        alt.Chart(summary_table)
+        .mark_bar()
+        .encode(
+            x=alt.X("group_name:N", title="Group"),
+            y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)"),
+            color=alt.Color("scenario:N", title="Scenario"),
+            tooltip=[
+                alt.Tooltip("group_name:N", title="Group"),
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip(
+                    "monsoon_change_pct:Q", title="Monsoon change (%)", format=".1f"
+                ),
+                alt.Tooltip(
+                    "monsoon_change_mm:Q", title="Monsoon change (mm)", format=".1f"
+                ),
+            ],
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(monsoon_chart, use_container_width=True)
+
+    climatology_df = pd.DataFrame(climatology_rows)
+    base_condition = alt.datum.period == "Baseline"
+    climatology_chart = (
+        alt.Chart(climatology_df)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("month:O", title="Month"),
+            y=alt.Y("rainfall_mm:Q", title="Average rainfall (mm)"),
+            color=alt.condition(
+                base_condition, alt.value("gray"), alt.Color("scenario:N", title="Scenario")
+            ),
+            strokeDash=alt.condition(
+                base_condition, alt.value([4, 4]), alt.value([1, 0])
+            ),
+            tooltip=[
+                alt.Tooltip("group_name:N", title="Group"),
+                alt.Tooltip("scenario:N", title="Scenario"),
+                alt.Tooltip("month:O", title="Month"),
+                alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
+            ],
+        )
+        .properties(height=280)
+    )
+    if len(summary_table["group_name"].unique()) > 1:
+        climatology_chart = climatology_chart.facet(
+            row=alt.Row("group_name:N", title="Group")
+        )
+    st.altair_chart(climatology_chart, use_container_width=True)
+else:
+    st.info("No groups available for baseline comparison with the selected filters.")
 
 summary = (
     filtered_view.groupby(["scenario", "province", "district_or_city"], as_index=False)[
