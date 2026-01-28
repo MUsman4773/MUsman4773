@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import altair as alt
 import pandas as pd
 import pydeck as pdk
@@ -31,14 +33,86 @@ DEFAULTS = {
     "future_years": None,
 }
 
+TOOL_OPTIONS = ["Rainfall", "Temperature", "NDVI (demo)", "Soil moisture (demo)"]
+LOGO_CANDIDATES = ["logo.png", "logo.svg", "logo.jpg", "logo.jpeg"]
+
 st.set_page_config(page_title="Pakistan Rainfall Scenarios", layout="wide")
 st.markdown(
     """
     <style>
+        :root {
+            --ee-header-height: 3.6rem;
+            --ee-panel-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
+            --ee-panel-border: 1px solid rgba(148, 163, 184, 0.4);
+        }
         .block-container {
-            padding-top: 1.5rem;
+            padding-top: calc(var(--ee-header-height) + 1.25rem);
             padding-bottom: 2rem;
             max-width: 1200px;
+        }
+        div[data-testid="stVerticalBlock"]:has(.ee-header-marker) {
+            position: fixed;
+            top: 0.75rem;
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(1200px, calc(100% - 3rem));
+            z-index: 100;
+            background: rgba(248, 250, 252, 0.96);
+            border: var(--ee-panel-border);
+            border-radius: 0.9rem;
+            padding: 0.5rem 1rem;
+            box-shadow: var(--ee-panel-shadow);
+            backdrop-filter: blur(8px);
+        }
+        div[data-testid="stVerticalBlock"]:has(.ee-header-marker) .stHorizontalBlock {
+            align-items: center;
+        }
+        .ee-logo {
+            width: 2.4rem;
+            height: 2.4rem;
+            border-radius: 0.65rem;
+            background: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+        }
+        .ee-header-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.1rem;
+        }
+        .ee-header-subtitle {
+            font-size: 0.85rem;
+            color: #475569;
+        }
+        .ee-active-tool {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            background: #e0f2fe;
+            color: #0c4a6e;
+            border-radius: 999px;
+            padding: 0.2rem 0.65rem;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        div[data-testid="stVerticalBlock"]:has(.ee-floating-panel-marker) {
+            position: fixed;
+            right: 1.5rem;
+            bottom: 1.5rem;
+            width: min(340px, 90vw);
+            z-index: 90;
+            background: #ffffff;
+            border: var(--ee-panel-border);
+            border-radius: 1rem;
+            padding: 0.75rem 0.9rem;
+            box-shadow: var(--ee-panel-shadow);
+        }
+        .ee-floating-panel-title {
+            font-weight: 600;
+            font-size: 0.95rem;
+            margin-bottom: 0.25rem;
         }
         div[data-testid="stMetric"] {
             border: 1px solid rgba(49, 51, 63, 0.2);
@@ -70,11 +144,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.title("Pakistan Rainfall Scenario Explorer")
-st.write(
-    "Explore historical rainfall and future projections for major Pakistani cities. "
-    "Use the sidebar filters to compare scenarios across time."
-)
+if "active_tool" not in st.session_state:
+    st.session_state["active_tool"] = TOOL_OPTIONS[0]
+if "show_floating_panel" not in st.session_state:
+    st.session_state["show_floating_panel"] = True
 
 DATE_FORMATS = ["%Y-%m", "%Y-%m-%d", "%Y/%m/%d"]
 MM_FORMAT = "{:.1f}"
@@ -138,6 +211,19 @@ def render_color_legend(items: list[tuple[str, tuple[int, int, int]]]) -> None:
         ]
     )
     st.markdown(legend_html, unsafe_allow_html=True)
+
+
+def find_logo_path() -> Path | None:
+    for folder in (Path("."), Path("data")):
+        for name in LOGO_CANDIDATES:
+            candidate = folder / name
+            if candidate.exists():
+                return candidate
+    return None
+
+
+def render_tool_placeholder(active_tool: str) -> None:
+    st.info(f"{active_tool} layers are coming soon. Keep exploring rainfall for now.")
 
 
 def section_header(title: str) -> None:
@@ -566,6 +652,18 @@ elif st.session_state["data_source_mode"] not in (
 reset_clicked = st.sidebar.button("Reset filters", key="reset_filters")
 st.sidebar.caption("Restores defaults and reruns.")
 
+with st.sidebar.expander("Map tools", expanded=True):
+    st.caption("Switch the active map layer.")
+    tool_columns = st.columns(2)
+    for index, tool in enumerate(TOOL_OPTIONS):
+        column = tool_columns[index % 2]
+        if column.button(tool, key=f"tool_{tool.lower().replace(' ', '_')}"):
+            st.session_state["active_tool"] = tool
+    st.markdown(
+        f"<span class='ee-active-tool'>Active: {st.session_state['active_tool']}</span>",
+        unsafe_allow_html=True,
+    )
+
 with st.sidebar.expander("Data source", expanded=True):
     data_source = st.radio(
         "Choose a data source",
@@ -637,7 +735,9 @@ DEFAULTS.update(
     }
 )
 
-if reset_clicked:
+reset_requested = st.session_state.pop("reset_filters_requested", False)
+
+if reset_clicked or reset_requested:
     for key in [
         "scenarios",
         "provinces",
@@ -748,462 +848,557 @@ if monsoon_only:
         f"rainfall_filtered_{scenario_label}_{date_label}_monsoon.csv"
     )
 
+logo_path = find_logo_path()
+header_container = st.container()
+with header_container:
+    st.markdown('<div class="ee-header-marker"></div>', unsafe_allow_html=True)
+    header_cols = st.columns([1, 7, 2])
+    with header_cols[0]:
+        if logo_path:
+            st.image(str(logo_path), width=36)
+        else:
+            st.markdown(
+                """
+                <div class="ee-logo">
+                    <svg viewBox="0 0 48 48" width="32" height="32" aria-hidden="true">
+                        <text x="50%" y="60%" text-anchor="middle" font-size="28">🌧️</text>
+                    </svg>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    with header_cols[1]:
+        st.markdown(
+            """
+            <div class="ee-header-title">Pakistan Rainfall Scenario Explorer</div>
+            <div class="ee-header-subtitle">
+                Explore historical rainfall and future projections for major Pakistani cities.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with header_cols[2]:
+        with st.popover("Deploy", use_container_width=True):
+            st.download_button(
+                "Download filtered data",
+                data=filtered_view.to_csv(index=False),
+                file_name=filtered_filename,
+                mime="text/csv",
+            )
+            if st.button("Reset filters", key="reset_filters_popover"):
+                st.session_state["reset_filters_requested"] = True
+                st.rerun()
+            st.markdown("**About**")
+            st.caption("Scenario explorer UI styled after Earth Engine Apps.")
+            st.markdown("[Open documentation](#)")
+
+st.markdown(
+    f"<span class='ee-active-tool'>Active tool: {st.session_state['active_tool']}</span>",
+    unsafe_allow_html=True,
+)
+st.checkbox("Show floating panel", key="show_floating_panel")
+active_tool = st.session_state["active_tool"]
+
 map_tab, overview_tab, baseline_tab, data_table_tab = st.tabs(
     ["Map view", "Overview", "Baseline comparison", "Data table"]
 )
 
 with map_tab:
     section_header("Interactive map")
-    season_label = "Monsoon (Jul-Sep)" if monsoon_only else "Annual"
-    if "show_markers" not in st.session_state:
-        st.session_state["show_markers"] = True
-    if "color_by_province" not in st.session_state:
-        st.session_state["color_by_province"] = compare_by == "Province"
-
-    with st.sidebar.expander("Map tools", expanded=False):
-        if st.button("Reset map", key="reset_map"):
-            st.session_state.pop("map_view_state", None)
-        st.toggle(
-            "Show city markers",
-            key="show_markers",
-        )
-        st.toggle(
-            "Color by province",
-            key="color_by_province",
-            disabled=compare_by != "Province",
-            help="Enable when grouping by province to color points.",
-        )
-
-    map_points = build_map_points(
-        filtered,
-        scenarios,
-        season_label,
-        st.session_state.get("color_by_province", False),
-    )
-
-    if map_points.empty:
-        st.info(
-            "No coordinates available for the selected cities. "
-            "Add latitude/longitude data to your CSV or choose from the sample cities."
-        )
+    if active_tool != "Rainfall":
+        render_tool_placeholder(active_tool)
     else:
-        map_center = (
-            map_points["lat"].mean(),
-            map_points["lon"].mean(),
-        )
-        default_view = pdk.ViewState(
-            latitude=map_center[0],
-            longitude=map_center[1],
-            zoom=4.8,
-            pitch=20,
-        )
-        view_state = st.session_state.get("map_view_state", default_view)
-        if not isinstance(view_state, pdk.ViewState):
-            view_state = default_view
-        st.session_state["map_view_state"] = view_state
+        season_label = "Monsoon (Jul-Sep)" if monsoon_only else "Annual"
+        if "show_markers" not in st.session_state:
+            st.session_state["show_markers"] = True
+        if "color_by_province" not in st.session_state:
+            st.session_state["color_by_province"] = compare_by == "Province"
 
-        layers = []
-        if st.session_state.get("show_markers", True):
-            layers.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    data=map_points,
-                    get_position="[lon, lat]",
-                    get_fill_color="color",
-                    get_radius=12000,
-                    pickable=True,
-                    auto_highlight=True,
-                )
+        with st.sidebar.expander("Map view settings", expanded=False):
+            if st.button("Reset map", key="reset_map"):
+                st.session_state.pop("map_view_state", None)
+            st.toggle(
+                "Show city markers",
+                key="show_markers",
+            )
+            st.toggle(
+                "Color by province",
+                key="color_by_province",
+                disabled=compare_by != "Province",
+                help="Enable when grouping by province to color points.",
             )
 
-        tooltip = {
-            "html": (
-                "<b>{district_or_city}</b><br/>"
-                "Province: {province}<br/>"
-                "Scenarios: {scenario_label}<br/>"
-                f"Season: {season_label}"
-            ),
-            "style": {
-                "backgroundColor": "#111827",
-                "color": "white",
-                "fontSize": "0.85rem",
-            },
-        }
-
-        st.pydeck_chart(
-            pdk.Deck(
-                layers=layers,
-                initial_view_state=view_state,
-                tooltip=tooltip,
-                map_style="mapbox://styles/mapbox/light-v10",
-            ),
-            use_container_width=True,
+        map_points = build_map_points(
+            filtered,
+            scenarios,
+            season_label,
+            st.session_state.get("color_by_province", False),
         )
 
-        if st.session_state.get("color_by_province", False):
-            province_order = sorted(map_points["province"].unique())
-            legend_items = [
-                (province, PROVINCE_COLORS[idx % len(PROVINCE_COLORS)])
-                for idx, province in enumerate(province_order)
-            ]
-            st.caption("Province color key")
-            render_color_legend(legend_items)
+        if map_points.empty:
+            st.info(
+                "No coordinates available for the selected cities. "
+                "Add latitude/longitude data to your CSV or choose from the sample cities."
+            )
         else:
-            st.caption("Markers represent selected cities.")
+            map_center = (
+                map_points["lat"].mean(),
+                map_points["lon"].mean(),
+            )
+            default_view = pdk.ViewState(
+                latitude=map_center[0],
+                longitude=map_center[1],
+                zoom=4.8,
+                pitch=20,
+            )
+            view_state = st.session_state.get("map_view_state", default_view)
+            if not isinstance(view_state, pdk.ViewState):
+                view_state = default_view
+            st.session_state["map_view_state"] = view_state
+
+            layers = []
+            if st.session_state.get("show_markers", True):
+                layers.append(
+                    pdk.Layer(
+                        "ScatterplotLayer",
+                        data=map_points,
+                        get_position="[lon, lat]",
+                        get_fill_color="color",
+                        get_radius=12000,
+                        pickable=True,
+                        auto_highlight=True,
+                    )
+                )
+
+            tooltip = {
+                "html": (
+                    "<b>{district_or_city}</b><br/>"
+                    "Province: {province}<br/>"
+                    "Scenarios: {scenario_label}<br/>"
+                    f"Season: {season_label}"
+                ),
+                "style": {
+                    "backgroundColor": "#111827",
+                    "color": "white",
+                    "fontSize": "0.85rem",
+                },
+            }
+
+            st.pydeck_chart(
+                pdk.Deck(
+                    layers=layers,
+                    initial_view_state=view_state,
+                    tooltip=tooltip,
+                    map_style="mapbox://styles/mapbox/light-v10",
+                ),
+                use_container_width=True,
+            )
+
+            if st.session_state.get("color_by_province", False):
+                province_order = sorted(map_points["province"].unique())
+                legend_items = [
+                    (province, PROVINCE_COLORS[idx % len(PROVINCE_COLORS)])
+                    for idx, province in enumerate(province_order)
+                ]
+                st.caption("Province color key")
+                render_color_legend(legend_items)
+            else:
+                st.caption("Markers represent selected cities.")
 
 with overview_tab:
-    overview_tables = compute_overview_tables(filtered, filtered_view)
-
-    section_header("Data diagnostics")
-
-    diagnostic_cols = st.columns(5)
-    diagnostic_cols[0].metric("Rows", f"{overview_tables['diagnostics']['rows']:,}")
-    diagnostic_cols[1].metric(
-        "Cities", f"{overview_tables['diagnostics']['cities']:,}"
-    )
-    diagnostic_cols[2].metric(
-        "Provinces", f"{overview_tables['diagnostics']['provinces']:,}"
-    )
-    diagnostic_cols[3].metric(
-        "Min date", overview_tables["diagnostics"]["min_date"].strftime("%Y-%m-%d")
-    )
-    diagnostic_cols[4].metric(
-        "Max date", overview_tables["diagnostics"]["max_date"].strftime("%Y-%m-%d")
-    )
-
-    section_header("Summary Statistics")
-    total_rainfall = overview_tables["summary_stats"]["total_rainfall"]
-    avg_rainfall = overview_tables["summary_stats"]["avg_rainfall"]
-    max_rainfall = overview_tables["summary_stats"]["max_rainfall"]
-    min_rainfall = overview_tables["summary_stats"]["min_rainfall"]
-
-    summary_cols = st.columns(4)
-    summary_cols[0].metric("Total rainfall (mm)", f"{total_rainfall:,.1f}")
-    summary_cols[1].metric("Average rainfall (mm)", f"{avg_rainfall:,.1f}")
-    summary_cols[2].metric("Maximum rainfall (mm)", f"{max_rainfall:,.1f}")
-    summary_cols[3].metric("Minimum rainfall (mm)", f"{min_rainfall:,.1f}")
-
-    section_header("Monthly Rainfall Over Time")
-    line_chart = (
-        alt.Chart(filtered_view)
-        .mark_line()
-        .encode(
-            x=alt.X("date:T", title="Date"),
-            y=alt.Y("rainfall_mm:Q", title="Rainfall (mm)"),
-            color=alt.Color("scenario:N", title="Scenario"),
-            detail="district_or_city:N",
-            tooltip=[
-                alt.Tooltip("district_or_city:N", title="City"),
-                alt.Tooltip("scenario:N", title="Scenario"),
-                alt.Tooltip("date:T", title="Date"),
-                alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
-            ],
-        )
-        .properties(height=320)
-    )
-    st.altair_chart(line_chart, use_container_width=True)
-
-    section_header("Monthly Climatology")
-    climatology = overview_tables["climatology"]
-    st.download_button(
-        "Download monthly climatology (CSV)",
-        data=climatology.to_csv(index=False),
-        file_name=f"monthly_climatology_{scenario_label}_{date_label}.csv",
-        mime="text/csv",
-    )
-    climatology_chart = (
-        alt.Chart(climatology)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("month:O", title="Month"),
-            y=alt.Y("rainfall_mm:Q", title="Average rainfall (mm)"),
-            color=alt.Color("scenario:N", title="Scenario"),
-            tooltip=[
-                alt.Tooltip("scenario:N", title="Scenario"),
-                alt.Tooltip("month:O", title="Month"),
-                alt.Tooltip("rainfall_mm:Q", title="Average rainfall (mm)", format=".1f"),
-            ],
-        )
-        .properties(height=280)
-    )
-    st.altair_chart(climatology_chart, use_container_width=True)
-
-    section_header("Monsoon Analysis (Jul-Sep)")
-    monsoon_data = overview_tables["monsoon_data"]
-    if monsoon_data.empty:
-        st.info("No monsoon-season data for the selected filters.")
+    if active_tool != "Rainfall":
+        section_header("Overview")
+        render_tool_placeholder(active_tool)
     else:
-        monsoon_total = monsoon_data["rainfall_mm"].sum()
-        monsoon_avg = monsoon_data["rainfall_mm"].mean()
-        monsoon_cols = st.columns(2)
-        monsoon_cols[0].metric("Monsoon total rainfall (mm)", f"{monsoon_total:,.1f}")
-        monsoon_cols[1].metric(
-            "Monsoon average rainfall (mm)", f"{monsoon_avg:,.1f}"
+        overview_tables = compute_overview_tables(filtered, filtered_view)
+    
+        section_header("Data diagnostics")
+    
+        diagnostic_cols = st.columns(5)
+        diagnostic_cols[0].metric("Rows", f"{overview_tables['diagnostics']['rows']:,}")
+        diagnostic_cols[1].metric(
+            "Cities", f"{overview_tables['diagnostics']['cities']:,}"
         )
-
-        monsoon_summary = overview_tables["monsoon_summary"]
-        monsoon_totals_chart = (
-            alt.Chart(monsoon_summary)
-            .mark_bar()
+        diagnostic_cols[2].metric(
+            "Provinces", f"{overview_tables['diagnostics']['provinces']:,}"
+        )
+        diagnostic_cols[3].metric(
+            "Min date", overview_tables["diagnostics"]["min_date"].strftime("%Y-%m-%d")
+        )
+        diagnostic_cols[4].metric(
+            "Max date", overview_tables["diagnostics"]["max_date"].strftime("%Y-%m-%d")
+        )
+    
+        section_header("Summary Statistics")
+        total_rainfall = overview_tables["summary_stats"]["total_rainfall"]
+        avg_rainfall = overview_tables["summary_stats"]["avg_rainfall"]
+        max_rainfall = overview_tables["summary_stats"]["max_rainfall"]
+        min_rainfall = overview_tables["summary_stats"]["min_rainfall"]
+    
+        summary_cols = st.columns(4)
+        summary_cols[0].metric("Total rainfall (mm)", f"{total_rainfall:,.1f}")
+        summary_cols[1].metric("Average rainfall (mm)", f"{avg_rainfall:,.1f}")
+        summary_cols[2].metric("Maximum rainfall (mm)", f"{max_rainfall:,.1f}")
+        summary_cols[3].metric("Minimum rainfall (mm)", f"{min_rainfall:,.1f}")
+    
+        section_header("Monthly Rainfall Over Time")
+        line_chart = (
+            alt.Chart(filtered_view)
+            .mark_line()
             .encode(
-                x=alt.X("scenario:N", title="Scenario"),
-                y=alt.Y("total_rainfall:Q", title="Total rainfall (mm)"),
+                x=alt.X("date:T", title="Date"),
+                y=alt.Y("rainfall_mm:Q", title="Rainfall (mm)"),
                 color=alt.Color("scenario:N", title="Scenario"),
+                detail="district_or_city:N",
                 tooltip=[
+                    alt.Tooltip("district_or_city:N", title="City"),
                     alt.Tooltip("scenario:N", title="Scenario"),
-                    alt.Tooltip(
-                        "total_rainfall:Q", title="Total rainfall (mm)", format=".1f"
-                    ),
+                    alt.Tooltip("date:T", title="Date"),
+                    alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
                 ],
             )
-            .properties(height=240)
+            .properties(height=320)
         )
-        monsoon_avg_chart = (
-            alt.Chart(monsoon_summary)
-            .mark_bar()
-            .encode(
-                x=alt.X("scenario:N", title="Scenario"),
-                y=alt.Y("average_rainfall:Q", title="Average rainfall (mm)"),
-                color=alt.Color("scenario:N", title="Scenario"),
-                tooltip=[
-                    alt.Tooltip("scenario:N", title="Scenario"),
-                    alt.Tooltip(
-                        "average_rainfall:Q",
-                        title="Average rainfall (mm)",
-                        format=".1f",
-                    ),
-                ],
-            )
-            .properties(height=240)
-        )
-        monsoon_chart_cols = st.columns(2)
-        with monsoon_chart_cols[0]:
-            st.altair_chart(monsoon_totals_chart, use_container_width=True)
-        with monsoon_chart_cols[1]:
-            st.altair_chart(monsoon_avg_chart, use_container_width=True)
-
-    section_header("Average Monthly Rainfall (mm)")
-    summary = overview_tables["avg_monthly"]
-    summary_display = summary.style.format({"rainfall_mm": MM_FORMAT})
-    st.dataframe(summary_display, use_container_width=True, hide_index=True)
-
-with baseline_tab:
-    section_header("Change vs Historical Baseline")
-
-    summary_table, climatology_df, baseline_warnings = compute_baseline_comparison(
-        df,
-        tuple(scenarios),
-        tuple(provinces),
-        tuple(locations),
-        compare_by,
-        baseline_range,
-        future_range,
-        monsoon_only,
-    )
-
-    for warning in baseline_warnings:
-        st.warning(warning)
-
-    if not summary_table.empty:
-        baseline_filename = (
-            "baseline_change_"
-            f"{compare_by.lower()}_{baseline_range[0]}-{baseline_range[1]}_"
-            f"{future_range[0]}-{future_range[1]}_"
-            f"{scenario_label}_{date_label}.csv"
-        )
+        st.altair_chart(line_chart, use_container_width=True)
+    
+        section_header("Monthly Climatology")
+        climatology = overview_tables["climatology"]
         st.download_button(
-            "Download baseline comparison (CSV)",
-            data=summary_table.to_csv(index=False),
-            file_name=baseline_filename,
+            "Download monthly climatology (CSV)",
+            data=climatology.to_csv(index=False),
+            file_name=f"monthly_climatology_{scenario_label}_{date_label}.csv",
             mime="text/csv",
         )
-
-        summary_table_display = summary_table.style.format(
-            {
-                "baseline_annual_mm": MM_FORMAT,
-                "future_annual_mm": MM_FORMAT,
-                "annual_change_mm": MM_FORMAT,
-                "annual_change_pct": PERCENT_FORMAT,
-                "baseline_monsoon_mm": MM_FORMAT,
-                "future_monsoon_mm": MM_FORMAT,
-                "monsoon_change_mm": MM_FORMAT,
-                "monsoon_change_pct": PERCENT_FORMAT,
-            }
-        )
-        st.dataframe(summary_table_display, use_container_width=True, hide_index=True)
-
-        scenario_order = [
-            scenario
-            for scenario in ["ssp245", "ssp585"]
-            if scenario in summary_table["scenario"].unique()
-        ]
-        annual_chart = (
-            alt.Chart(summary_table)
-            .mark_bar()
-            .encode(
-                x=alt.X("group_name:N", title="Group", sort=None),
-                xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
-                y=alt.Y("annual_change_pct:Q", title="Annual change (%)", stack=None),
-                color=alt.Color("scenario:N", title="Scenario"),
-                tooltip=[
-                    alt.Tooltip("group_name:N", title="Group"),
-                    alt.Tooltip("scenario:N", title="Scenario"),
-                    alt.Tooltip(
-                        "baseline_annual_mm:Q",
-                        title="Baseline annual (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "future_annual_mm:Q",
-                        title="Future annual (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "annual_change_mm:Q",
-                        title="Annual change (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "annual_change_pct:Q",
-                        title="Annual change (%)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "baseline_monsoon_mm:Q",
-                        title="Baseline monsoon (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "future_monsoon_mm:Q",
-                        title="Future monsoon (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "monsoon_change_mm:Q",
-                        title="Monsoon change (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "monsoon_change_pct:Q",
-                        title="Monsoon change (%)",
-                        format=".1f",
-                    ),
-                ],
-            )
-            .properties(height=260)
-        )
-        st.altair_chart(annual_chart, use_container_width=True)
-
-        monsoon_chart = (
-            alt.Chart(summary_table)
-            .mark_bar()
-            .encode(
-                x=alt.X("group_name:N", title="Group", sort=None),
-                xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
-                y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)", stack=None),
-                color=alt.Color("scenario:N", title="Scenario"),
-                tooltip=[
-                    alt.Tooltip("group_name:N", title="Group"),
-                    alt.Tooltip("scenario:N", title="Scenario"),
-                    alt.Tooltip(
-                        "baseline_annual_mm:Q",
-                        title="Baseline annual (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "future_annual_mm:Q",
-                        title="Future annual (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "annual_change_mm:Q",
-                        title="Annual change (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "annual_change_pct:Q",
-                        title="Annual change (%)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "baseline_monsoon_mm:Q",
-                        title="Baseline monsoon (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "future_monsoon_mm:Q",
-                        title="Future monsoon (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "monsoon_change_mm:Q",
-                        title="Monsoon change (mm)",
-                        format=".1f",
-                    ),
-                    alt.Tooltip(
-                        "monsoon_change_pct:Q",
-                        title="Monsoon change (%)",
-                        format=".1f",
-                    ),
-                ],
-            )
-            .properties(height=260)
-        )
-        st.altair_chart(monsoon_chart, use_container_width=True)
-
-        base_condition = alt.datum.period == "Baseline"
         climatology_chart = (
-            alt.Chart(climatology_df)
+            alt.Chart(climatology)
             .mark_line(point=True)
             .encode(
                 x=alt.X("month:O", title="Month"),
                 y=alt.Y("rainfall_mm:Q", title="Average rainfall (mm)"),
-                color=alt.condition(
-                    base_condition,
-                    alt.value("gray"),
-                    alt.Color("scenario:N", title="Scenario"),
-                ),
-                strokeDash=alt.condition(
-                    base_condition, alt.value([4, 4]), alt.value([1, 0])
-                ),
+                color=alt.Color("scenario:N", title="Scenario"),
                 tooltip=[
-                    alt.Tooltip("group_name:N", title="Group"),
                     alt.Tooltip("scenario:N", title="Scenario"),
                     alt.Tooltip("month:O", title="Month"),
-                    alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
+                    alt.Tooltip("rainfall_mm:Q", title="Average rainfall (mm)", format=".1f"),
                 ],
             )
             .properties(height=280)
         )
-        if len(summary_table["group_name"].unique()) > 1:
-            climatology_chart = climatology_chart.facet(
-                row=alt.Row("group_name:N", title="Group")
-            )
         st.altair_chart(climatology_chart, use_container_width=True)
+    
+        section_header("Monsoon Analysis (Jul-Sep)")
+        monsoon_data = overview_tables["monsoon_data"]
+        if monsoon_data.empty:
+            st.info("No monsoon-season data for the selected filters.")
+        else:
+            monsoon_total = monsoon_data["rainfall_mm"].sum()
+            monsoon_avg = monsoon_data["rainfall_mm"].mean()
+            monsoon_cols = st.columns(2)
+            monsoon_cols[0].metric("Monsoon total rainfall (mm)", f"{monsoon_total:,.1f}")
+            monsoon_cols[1].metric(
+                "Monsoon average rainfall (mm)", f"{monsoon_avg:,.1f}"
+            )
+    
+            monsoon_summary = overview_tables["monsoon_summary"]
+            monsoon_totals_chart = (
+                alt.Chart(monsoon_summary)
+                .mark_bar()
+                .encode(
+                    x=alt.X("scenario:N", title="Scenario"),
+                    y=alt.Y("total_rainfall:Q", title="Total rainfall (mm)"),
+                    color=alt.Color("scenario:N", title="Scenario"),
+                    tooltip=[
+                        alt.Tooltip("scenario:N", title="Scenario"),
+                        alt.Tooltip(
+                            "total_rainfall:Q", title="Total rainfall (mm)", format=".1f"
+                        ),
+                    ],
+                )
+                .properties(height=240)
+            )
+            monsoon_avg_chart = (
+                alt.Chart(monsoon_summary)
+                .mark_bar()
+                .encode(
+                    x=alt.X("scenario:N", title="Scenario"),
+                    y=alt.Y("average_rainfall:Q", title="Average rainfall (mm)"),
+                    color=alt.Color("scenario:N", title="Scenario"),
+                    tooltip=[
+                        alt.Tooltip("scenario:N", title="Scenario"),
+                        alt.Tooltip(
+                            "average_rainfall:Q",
+                            title="Average rainfall (mm)",
+                            format=".1f",
+                        ),
+                    ],
+                )
+                .properties(height=240)
+            )
+            monsoon_chart_cols = st.columns(2)
+            with monsoon_chart_cols[0]:
+                st.altair_chart(monsoon_totals_chart, use_container_width=True)
+            with monsoon_chart_cols[1]:
+                st.altair_chart(monsoon_avg_chart, use_container_width=True)
+    
+        section_header("Average Monthly Rainfall (mm)")
+        summary = overview_tables["avg_monthly"]
+        summary_display = summary.style.format({"rainfall_mm": MM_FORMAT})
+        st.dataframe(summary_display, use_container_width=True, hide_index=True)
+    
+with baseline_tab:
+    if active_tool != "Rainfall":
+        section_header("Baseline comparison")
+        render_tool_placeholder(active_tool)
     else:
-        st.info("No groups available for baseline comparison with the selected filters.")
-
+        section_header("Change vs Historical Baseline")
+    
+        summary_table, climatology_df, baseline_warnings = compute_baseline_comparison(
+            df,
+            tuple(scenarios),
+            tuple(provinces),
+            tuple(locations),
+            compare_by,
+            baseline_range,
+            future_range,
+            monsoon_only,
+        )
+    
+        for warning in baseline_warnings:
+            st.warning(warning)
+    
+        if not summary_table.empty:
+            baseline_filename = (
+                "baseline_change_"
+                f"{compare_by.lower()}_{baseline_range[0]}-{baseline_range[1]}_"
+                f"{future_range[0]}-{future_range[1]}_"
+                f"{scenario_label}_{date_label}.csv"
+            )
+            st.download_button(
+                "Download baseline comparison (CSV)",
+                data=summary_table.to_csv(index=False),
+                file_name=baseline_filename,
+                mime="text/csv",
+            )
+    
+            summary_table_display = summary_table.style.format(
+                {
+                    "baseline_annual_mm": MM_FORMAT,
+                    "future_annual_mm": MM_FORMAT,
+                    "annual_change_mm": MM_FORMAT,
+                    "annual_change_pct": PERCENT_FORMAT,
+                    "baseline_monsoon_mm": MM_FORMAT,
+                    "future_monsoon_mm": MM_FORMAT,
+                    "monsoon_change_mm": MM_FORMAT,
+                    "monsoon_change_pct": PERCENT_FORMAT,
+                }
+            )
+            st.dataframe(summary_table_display, use_container_width=True, hide_index=True)
+    
+            scenario_order = [
+                scenario
+                for scenario in ["ssp245", "ssp585"]
+                if scenario in summary_table["scenario"].unique()
+            ]
+            annual_chart = (
+                alt.Chart(summary_table)
+                .mark_bar()
+                .encode(
+                    x=alt.X("group_name:N", title="Group", sort=None),
+                    xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
+                    y=alt.Y("annual_change_pct:Q", title="Annual change (%)", stack=None),
+                    color=alt.Color("scenario:N", title="Scenario"),
+                    tooltip=[
+                        alt.Tooltip("group_name:N", title="Group"),
+                        alt.Tooltip("scenario:N", title="Scenario"),
+                        alt.Tooltip(
+                            "baseline_annual_mm:Q",
+                            title="Baseline annual (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "future_annual_mm:Q",
+                            title="Future annual (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "annual_change_mm:Q",
+                            title="Annual change (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "annual_change_pct:Q",
+                            title="Annual change (%)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "baseline_monsoon_mm:Q",
+                            title="Baseline monsoon (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "future_monsoon_mm:Q",
+                            title="Future monsoon (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "monsoon_change_mm:Q",
+                            title="Monsoon change (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "monsoon_change_pct:Q",
+                            title="Monsoon change (%)",
+                            format=".1f",
+                        ),
+                    ],
+                )
+                .properties(height=260)
+            )
+            st.altair_chart(annual_chart, use_container_width=True)
+    
+            monsoon_chart = (
+                alt.Chart(summary_table)
+                .mark_bar()
+                .encode(
+                    x=alt.X("group_name:N", title="Group", sort=None),
+                    xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
+                    y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)", stack=None),
+                    color=alt.Color("scenario:N", title="Scenario"),
+                    tooltip=[
+                        alt.Tooltip("group_name:N", title="Group"),
+                        alt.Tooltip("scenario:N", title="Scenario"),
+                        alt.Tooltip(
+                            "baseline_annual_mm:Q",
+                            title="Baseline annual (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "future_annual_mm:Q",
+                            title="Future annual (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "annual_change_mm:Q",
+                            title="Annual change (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "annual_change_pct:Q",
+                            title="Annual change (%)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "baseline_monsoon_mm:Q",
+                            title="Baseline monsoon (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "future_monsoon_mm:Q",
+                            title="Future monsoon (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "monsoon_change_mm:Q",
+                            title="Monsoon change (mm)",
+                            format=".1f",
+                        ),
+                        alt.Tooltip(
+                            "monsoon_change_pct:Q",
+                            title="Monsoon change (%)",
+                            format=".1f",
+                        ),
+                    ],
+                )
+                .properties(height=260)
+            )
+            st.altair_chart(monsoon_chart, use_container_width=True)
+    
+            base_condition = alt.datum.period == "Baseline"
+            climatology_chart = (
+                alt.Chart(climatology_df)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("month:O", title="Month"),
+                    y=alt.Y("rainfall_mm:Q", title="Average rainfall (mm)"),
+                    color=alt.condition(
+                        base_condition,
+                        alt.value("gray"),
+                        alt.Color("scenario:N", title="Scenario"),
+                    ),
+                    strokeDash=alt.condition(
+                        base_condition, alt.value([4, 4]), alt.value([1, 0])
+                    ),
+                    tooltip=[
+                        alt.Tooltip("group_name:N", title="Group"),
+                        alt.Tooltip("scenario:N", title="Scenario"),
+                        alt.Tooltip("month:O", title="Month"),
+                        alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
+                    ],
+                )
+                .properties(height=280)
+            )
+            if len(summary_table["group_name"].unique()) > 1:
+                climatology_chart = climatology_chart.facet(
+                    row=alt.Row("group_name:N", title="Group")
+                )
+            st.altair_chart(climatology_chart, use_container_width=True)
+        else:
+            st.info("No groups available for baseline comparison with the selected filters.")
+    
 with data_table_tab:
-    section_header("Filtered data")
-    download_label = "Download filtered data (CSV)"
-    filtered_download = filtered_view
-    if monsoon_only:
-        download_label = "Download filtered monsoon data (CSV)"
-    download_cols = st.columns(2)
-    with download_cols[0]:
-        st.download_button(
-            download_label,
-            data=filtered_download.to_csv(index=False),
-            file_name=filtered_filename,
-            mime="text/csv",
+    if active_tool != "Rainfall":
+        section_header("Data table")
+        render_tool_placeholder(active_tool)
+    else:
+        section_header("Filtered data")
+        download_label = "Download filtered data (CSV)"
+        filtered_download = filtered_view
+        if monsoon_only:
+            download_label = "Download filtered monsoon data (CSV)"
+        download_cols = st.columns(2)
+        with download_cols[0]:
+            st.download_button(
+                download_label,
+                data=filtered_download.to_csv(index=False),
+                file_name=filtered_filename,
+                mime="text/csv",
+            )
+        with download_cols[1]:
+            st.download_button(
+                "Download filtered data (JSON)",
+                data=filtered_download.to_json(orient="records"),
+                file_name=filtered_filename.replace(".csv", ".json"),
+                mime="application/json",
+            )
+        st.dataframe(filtered_download, use_container_width=True, hide_index=True)
+
+if st.session_state.get("show_floating_panel"):
+    panel_container = st.container()
+    with panel_container:
+        st.markdown('<div class="ee-floating-panel-marker"></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="ee-floating-panel-title">Floating panel</div>',
+            unsafe_allow_html=True,
         )
-    with download_cols[1]:
-        st.download_button(
-            "Download filtered data (JSON)",
-            data=filtered_download.to_json(orient="records"),
-            file_name=filtered_filename.replace(".csv", ".json"),
-            mime="application/json",
-        )
-    st.dataframe(filtered_download, use_container_width=True, hide_index=True)
+        if active_tool == "Rainfall":
+            compact_series = (
+                filtered_view.groupby("date", as_index=False)["rainfall_mm"].mean()
+            )
+            compact_chart = (
+                alt.Chart(compact_series)
+                .mark_line()
+                .encode(
+                    x=alt.X("date:T", title=""),
+                    y=alt.Y("rainfall_mm:Q", title="Monthly rainfall (mm)"),
+                    tooltip=[
+                        alt.Tooltip("date:T", title="Date"),
+                        alt.Tooltip("rainfall_mm:Q", title="Rainfall (mm)", format=".1f"),
+                    ],
+                )
+                .properties(height=160)
+            )
+            st.altair_chart(compact_chart, use_container_width=True)
+        else:
+            st.caption("No chart available for this tool yet.")
 
 st.caption("Sample data is synthetic and for demonstration only.")
