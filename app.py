@@ -26,34 +26,59 @@ st.write(
     "Use the sidebar filters to compare scenarios across time."
 )
 
+DATE_FORMATS = ["%Y-%m", "%Y-%m-%d", "%Y/%m/%d"]
+
+
+def parse_dates(date_series: pd.Series) -> pd.Series:
+    cleaned = date_series.astype(str).str.strip()
+    parsed = pd.Series(pd.NaT, index=cleaned.index)
+    for fmt in DATE_FORMATS:
+        parsed = parsed.fillna(pd.to_datetime(cleaned, format=fmt, errors="coerce"))
+    if parsed.isna().any():
+        raise ValueError(
+            "Column 'date' must use YYYY-MM, YYYY-MM-DD, or YYYY/MM/DD formats "
+            "(e.g., 1980-01, 1980-01-15, 1980/01/15)."
+        )
+    return parsed
+
+
+def normalize_schema(data: pd.DataFrame) -> pd.DataFrame:
+    data = data.copy()
+    rename_map = {}
+    if "district_or_city" not in data.columns and "city" in data.columns:
+        rename_map["city"] = "district_or_city"
+    if "rainfall_mm" not in data.columns and "rainfall" in data.columns:
+        rename_map["rainfall"] = "rainfall_mm"
+    if rename_map:
+        data = data.rename(columns=rename_map)
+    return data
+
+
 @st.cache_data
-def load_data_from_csv(file_or_path) -> pd.DataFrame:
+def load_data_from_csv(file_or_path) -> tuple[pd.DataFrame, list[str]]:
     data = pd.read_csv(file_or_path)
     data.columns = [column.strip() for column in data.columns]
+    data = normalize_schema(data)
     missing_columns = REQUIRED_COLUMNS - set(data.columns)
     if missing_columns:
         missing_list = ", ".join(sorted(missing_columns))
-        raise ValueError(f"Missing required columns: {missing_list}.")
-
-    date_series = data["date"]
-    try:
-        parsed_dates = pd.to_datetime(date_series, errors="raise")
-    except (ValueError, TypeError):
-        parsed_ym = pd.to_datetime(date_series, format="%Y-%m", errors="coerce")
-        parsed_ymd = pd.to_datetime(date_series, format="%Y-%m-%d", errors="coerce")
-        parsed_dates = parsed_ym.fillna(parsed_ymd)
-
-    if parsed_dates.isna().any():
+        template_schema = ", ".join(TEMPLATE_COLUMNS)
         raise ValueError(
-            "Column 'date' must use YYYY-MM or YYYY-MM-DD format and be parseable."
+            "Missing required columns: "
+            f"{missing_list}. Expected schema: {template_schema}."
         )
 
-    data["date"] = parsed_dates
+    data["date"] = parse_dates(data["date"])
     data["rainfall_mm"] = pd.to_numeric(data["rainfall_mm"], errors="coerce")
-    if data["rainfall_mm"].isna().any():
-        raise ValueError("Column 'rainfall_mm' must be numeric.")
+    invalid_rainfall = data["rainfall_mm"].isna().sum()
+    warnings = []
+    if invalid_rainfall:
+        data = data.dropna(subset=["rainfall_mm"])
+        warnings.append(
+            f"Dropped {invalid_rainfall:,} row(s) with non-numeric rainfall_mm values."
+        )
 
-    return data
+    return data, warnings
 
 
 def compute_yearly_totals(df: pd.DataFrame) -> pd.DataFrame:
@@ -146,15 +171,18 @@ try:
         if uploaded_file is None:
             st.info("Upload a CSV file to continue.")
             st.stop()
-        df = load_data_from_csv(uploaded_file)
+        df, data_warnings = load_data_from_csv(uploaded_file)
     else:
-        df = load_data_from_csv(DATA_PATH)
+        df, data_warnings = load_data_from_csv(DATA_PATH)
 except FileNotFoundError:
     st.error("Sample data not found. Run `python scripts/make_sample_data.py` first.")
     st.stop()
 except ValueError as error:
     st.error(str(error))
     st.stop()
+
+for warning in data_warnings:
+    st.warning(warning)
 
 st.sidebar.header("Filters")
 scenarios = st.sidebar.multiselect(
@@ -191,9 +219,34 @@ filtered = df[
     & (df["date"] <= pd.to_datetime(end_date))
 ]
 
+st.subheader("Data diagnostics")
 if filtered.empty:
     st.warning("No data for the selected filters.")
     st.stop()
+
+diagnostic_cols = st.columns(5)
+diagnostic_cols[0].metric("Rows", f"{len(filtered):,}")
+diagnostic_cols[1].metric("Cities", f"{filtered['district_or_city'].nunique():,}")
+diagnostic_cols[2].metric("Provinces", f"{filtered['province'].nunique():,}")
+diagnostic_cols[3].metric(
+    "Min date", filtered["date"].min().strftime("%Y-%m-%d")
+)
+diagnostic_cols[4].metric(
+    "Max date", filtered["date"].max().strftime("%Y-%m-%d")
+)
+
+scenario_label = "all-scenarios"
+if len(scenarios) == 1:
+    scenario_label = scenarios[0]
+scenario_label = scenario_label.replace(" ", "-")
+date_label = f"{pd.to_datetime(start_date):%Y%m%d}-{pd.to_datetime(end_date):%Y%m%d}"
+filtered_filename = f"rainfall_filtered_{scenario_label}_{date_label}.csv"
+st.download_button(
+    "Download filtered data (CSV)",
+    data=filtered.to_csv(index=False),
+    file_name=filtered_filename,
+    mime="text/csv",
+)
 
 st.sidebar.subheader("Seasonal view")
 monsoon_only = st.sidebar.toggle("Monsoon season only (Jul-Sep)", value=False)
@@ -431,6 +484,17 @@ for group_name in selected_groups:
 
 if summary_rows:
     summary_table = pd.DataFrame(summary_rows)
+    baseline_filename = (
+        "baseline_change_"
+        f"{compare_by.lower()}_{future_label.replace(' ', '')}_"
+        f"{scenario_label}_{date_label}.csv"
+    )
+    st.download_button(
+        "Download baseline change table (CSV)",
+        data=summary_table.to_csv(index=False),
+        file_name=baseline_filename,
+        mime="text/csv",
+    )
     ssp585_order = (
         summary_table[summary_table["scenario"] == "SSP585"]
         .sort_values("annual_change_pct", ascending=False)["group_name"]
