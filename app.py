@@ -27,6 +27,13 @@ st.write(
 )
 
 DATE_FORMATS = ["%Y-%m", "%Y-%m-%d", "%Y/%m/%d"]
+MM_FORMAT = "{:.1f}"
+PERCENT_FORMAT = "{:.1f}%"
+
+
+def section_header(title: str) -> None:
+    st.markdown("")
+    st.subheader(title)
 
 
 def parse_dates(date_series: pd.Series) -> pd.Series:
@@ -219,7 +226,7 @@ filtered = df[
     & (df["date"] <= pd.to_datetime(end_date))
 ]
 
-st.subheader("Data diagnostics")
+section_header("Data diagnostics")
 if filtered.empty:
     st.warning("No data for the selected filters.")
     st.stop()
@@ -260,7 +267,7 @@ if monsoon_only:
         st.warning("No data for the selected filters in monsoon months.")
         st.stop()
 
-st.subheader("Summary Statistics")
+section_header("Summary Statistics")
 total_rainfall = filtered_view["rainfall_mm"].sum()
 avg_rainfall = filtered_view["rainfall_mm"].mean()
 max_rainfall = filtered_view["rainfall_mm"].max()
@@ -272,7 +279,7 @@ summary_cols[1].metric("Average rainfall (mm)", f"{avg_rainfall:,.1f}")
 summary_cols[2].metric("Maximum rainfall (mm)", f"{max_rainfall:,.1f}")
 summary_cols[3].metric("Minimum rainfall (mm)", f"{min_rainfall:,.1f}")
 
-st.subheader("Monthly Rainfall Over Time")
+section_header("Monthly Rainfall Over Time")
 line_chart = (
     alt.Chart(filtered_view)
     .mark_line()
@@ -292,7 +299,7 @@ line_chart = (
 )
 st.altair_chart(line_chart, use_container_width=True)
 
-st.subheader("Monthly Climatology")
+section_header("Monthly Climatology")
 climatology = (
     filtered_view.groupby(["scenario", "month"], as_index=False)["rainfall_mm"]
     .mean()
@@ -315,7 +322,7 @@ climatology_chart = (
 )
 st.altair_chart(climatology_chart, use_container_width=True)
 
-st.subheader("Monsoon Analysis (Jul-Sep)")
+section_header("Monsoon Analysis (Jul-Sep)")
 monsoon_data = filtered[filtered["month"].between(7, 9)]
 if monsoon_data.empty:
     st.info("No monsoon-season data for the selected filters.")
@@ -374,7 +381,7 @@ else:
     with monsoon_chart_cols[1]:
         st.altair_chart(monsoon_avg_chart, use_container_width=True)
 
-st.subheader("Change vs Historical Baseline")
+section_header("Change vs Historical Baseline")
 compare_by = st.radio("Compare by", options=["City", "Province"], horizontal=True)
 future_periods = {
     "2015-2044": (pd.Timestamp("2015-01-01"), pd.Timestamp("2044-12-31")),
@@ -484,19 +491,8 @@ for group_name in selected_groups:
 
 if summary_rows:
     summary_table = pd.DataFrame(summary_rows)
-    baseline_filename = (
-        "baseline_change_"
-        f"{compare_by.lower()}_{future_label.replace(' ', '')}_"
-        f"{scenario_label}_{date_label}.csv"
-    )
-    st.download_button(
-        "Download baseline change table (CSV)",
-        data=summary_table.to_csv(index=False),
-        file_name=baseline_filename,
-        mime="text/csv",
-    )
     ssp585_order = (
-        summary_table[summary_table["scenario"] == "SSP585"]
+        summary_table[summary_table["scenario"] == "ssp585"]
         .sort_values("annual_change_pct", ascending=False)["group_name"]
         .tolist()
     )
@@ -512,33 +508,54 @@ if summary_rows:
         )
         summary_table = summary_table.sort_values(["group_name", "scenario"])
 
+    baseline_filename = (
+        "baseline_change_"
+        f"{compare_by.lower()}_{future_label.replace(' ', '')}_"
+        f"{scenario_label}_{date_label}.csv"
+    )
+    st.download_button(
+        "Download baseline comparison table (CSV)",
+        data=summary_table.to_csv(index=False),
+        file_name=baseline_filename,
+        mime="text/csv",
+    )
+
     summary_table_display = summary_table.style.format(
         {
-            "baseline_annual_mm": "{:.1f}",
-            "future_annual_mm": "{:.1f}",
-            "annual_change_mm": "{:.1f}",
-            "annual_change_pct": "{:.1f}",
-            "baseline_monsoon_mm": "{:.1f}",
-            "future_monsoon_mm": "{:.1f}",
-            "monsoon_change_mm": "{:.1f}",
-            "monsoon_change_pct": "{:.1f}",
+            "baseline_annual_mm": MM_FORMAT,
+            "future_annual_mm": MM_FORMAT,
+            "annual_change_mm": MM_FORMAT,
+            "annual_change_pct": PERCENT_FORMAT,
+            "baseline_monsoon_mm": MM_FORMAT,
+            "future_monsoon_mm": MM_FORMAT,
+            "monsoon_change_mm": MM_FORMAT,
+            "monsoon_change_pct": PERCENT_FORMAT,
         }
     )
     st.dataframe(summary_table_display, use_container_width=True, hide_index=True)
 
+    scenario_order = [
+        scenario for scenario in ["ssp245", "ssp585"] if scenario in summary_table["scenario"].unique()
+    ]
     annual_chart = (
         alt.Chart(summary_table)
         .mark_bar()
         .encode(
             x=alt.X("group_name:N", title="Group", sort=None),
-            xOffset=alt.XOffset("scenario:N"),
+            xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
             y=alt.Y("annual_change_pct:Q", title="Annual change (%)", stack=None),
             color=alt.Color("scenario:N", title="Scenario"),
             tooltip=[
                 alt.Tooltip("group_name:N", title="Group"),
                 alt.Tooltip("scenario:N", title="Scenario"),
-                alt.Tooltip("annual_change_pct:Q", title="Annual change (%)", format=".1f"),
+                alt.Tooltip("baseline_annual_mm:Q", title="Baseline annual (mm)", format=".1f"),
+                alt.Tooltip("future_annual_mm:Q", title="Future annual (mm)", format=".1f"),
                 alt.Tooltip("annual_change_mm:Q", title="Annual change (mm)", format=".1f"),
+                alt.Tooltip("annual_change_pct:Q", title="Annual change (%)", format=".1f"),
+                alt.Tooltip("baseline_monsoon_mm:Q", title="Baseline monsoon (mm)", format=".1f"),
+                alt.Tooltip("future_monsoon_mm:Q", title="Future monsoon (mm)", format=".1f"),
+                alt.Tooltip("monsoon_change_mm:Q", title="Monsoon change (mm)", format=".1f"),
+                alt.Tooltip("monsoon_change_pct:Q", title="Monsoon change (%)", format=".1f"),
             ],
         )
         .properties(height=260)
@@ -550,18 +567,20 @@ if summary_rows:
         .mark_bar()
         .encode(
             x=alt.X("group_name:N", title="Group", sort=None),
-            xOffset=alt.XOffset("scenario:N"),
+            xOffset=alt.XOffset("scenario:N", sort=scenario_order or None),
             y=alt.Y("monsoon_change_pct:Q", title="Monsoon change (%)", stack=None),
             color=alt.Color("scenario:N", title="Scenario"),
             tooltip=[
                 alt.Tooltip("group_name:N", title="Group"),
                 alt.Tooltip("scenario:N", title="Scenario"),
-                alt.Tooltip(
-                    "monsoon_change_pct:Q", title="Monsoon change (%)", format=".1f"
-                ),
-                alt.Tooltip(
-                    "monsoon_change_mm:Q", title="Monsoon change (mm)", format=".1f"
-                ),
+                alt.Tooltip("baseline_annual_mm:Q", title="Baseline annual (mm)", format=".1f"),
+                alt.Tooltip("future_annual_mm:Q", title="Future annual (mm)", format=".1f"),
+                alt.Tooltip("annual_change_mm:Q", title="Annual change (mm)", format=".1f"),
+                alt.Tooltip("annual_change_pct:Q", title="Annual change (%)", format=".1f"),
+                alt.Tooltip("baseline_monsoon_mm:Q", title="Baseline monsoon (mm)", format=".1f"),
+                alt.Tooltip("future_monsoon_mm:Q", title="Future monsoon (mm)", format=".1f"),
+                alt.Tooltip("monsoon_change_mm:Q", title="Monsoon change (mm)", format=".1f"),
+                alt.Tooltip("monsoon_change_pct:Q", title="Monsoon change (%)", format=".1f"),
             ],
         )
         .properties(height=260)
@@ -607,8 +626,8 @@ summary = (
     .sort_values(["scenario", "province", "district_or_city"])
 )
 
-st.subheader("Average Monthly Rainfall (mm)")
-summary_display = summary.style.format({"rainfall_mm": "{:.1f}"})
+section_header("Average Monthly Rainfall (mm)")
+summary_display = summary.style.format({"rainfall_mm": MM_FORMAT})
 st.dataframe(summary_display, use_container_width=True, hide_index=True)
 
 st.caption("Sample data is synthetic and for demonstration only.")
