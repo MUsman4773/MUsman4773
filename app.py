@@ -1,5 +1,6 @@
 import altair as alt
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
 
 DATA_PATH = "data/pakistan_rainfall_sample.csv"
@@ -34,7 +35,11 @@ st.set_page_config(page_title="Pakistan Rainfall Scenarios", layout="wide")
 st.markdown(
     """
     <style>
-        .block-container { padding-top: 2rem; padding-bottom: 2.5rem; }
+        .block-container {
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+            max-width: 1200px;
+        }
         div[data-testid="stMetric"] {
             border: 1px solid rgba(49, 51, 63, 0.2);
             border-radius: 0.75rem;
@@ -48,6 +53,17 @@ st.markdown(
         }
         div[data-testid="stSidebar"] .stVerticalBlock > div {
             gap: 0.45rem;
+        }
+        div[data-testid="stExpander"] {
+            border: 1px solid rgba(49, 51, 63, 0.15);
+            border-radius: 0.75rem;
+            overflow: hidden;
+        }
+        div[data-testid="stExpander"] > details {
+            padding: 0.35rem 0.15rem;
+        }
+        div[data-testid="stExpander"] summary {
+            font-weight: 600;
         }
     </style>
     """,
@@ -63,6 +79,65 @@ st.write(
 DATE_FORMATS = ["%Y-%m", "%Y-%m-%d", "%Y/%m/%d"]
 MM_FORMAT = "{:.1f}"
 PERCENT_FORMAT = "{:.1f}%"
+CITY_COORDS = {
+    "Islamabad": (33.6844, 73.0479),
+    "Karachi": (24.8607, 67.0011),
+    "Lahore": (31.5497, 74.3436),
+    "Peshawar": (34.0151, 71.5249),
+    "Quetta": (30.1798, 66.975),
+}
+PROVINCE_COLORS = [
+    (33, 150, 243),
+    (156, 39, 176),
+    (255, 152, 0),
+    (76, 175, 80),
+    (244, 67, 54),
+    (0, 150, 136),
+]
+
+
+def build_map_points(
+    data: pd.DataFrame,
+    scenarios_selected: list[str],
+    season_label: str,
+    color_by_province: bool,
+) -> pd.DataFrame:
+    points = data[["district_or_city", "province"]].drop_duplicates().copy()
+    points["coords"] = points["district_or_city"].map(CITY_COORDS)
+    points = points.dropna(subset=["coords"])
+    if points.empty:
+        return points
+    points["lat"] = points["coords"].apply(lambda value: value[0])
+    points["lon"] = points["coords"].apply(lambda value: value[1])
+    points["scenario_label"] = ", ".join(scenarios_selected) or "All"
+    points["season_label"] = season_label
+
+    if color_by_province:
+        province_order = sorted(points["province"].unique())
+        color_map = {
+            province: PROVINCE_COLORS[idx % len(PROVINCE_COLORS)]
+            for idx, province in enumerate(province_order)
+        }
+        points["color"] = points["province"].map(color_map)
+    else:
+        points["color"] = [(33, 150, 243)] * len(points)
+    return points
+
+
+def render_color_legend(items: list[tuple[str, tuple[int, int, int]]]) -> None:
+    if not items:
+        return
+    legend_html = " ".join(
+        [
+            "<span style='display:inline-flex; align-items:center; gap:0.35rem; "
+            "margin-right:0.75rem;'>"
+            f"<span style='width:0.75rem; height:0.75rem; border-radius:0.25rem; "
+            f"background-color: rgb({color[0]}, {color[1]}, {color[2]});'></span>"
+            f"<span>{label}</span></span>"
+            for label, color in items
+        ]
+    )
+    st.markdown(legend_html, unsafe_allow_html=True)
 
 
 def section_header(title: str) -> None:
@@ -607,8 +682,6 @@ with st.sidebar.expander("Filters", expanded=True):
         key="locations",
     )
     st.caption("Focus on the cities or districts you care about.")
-
-with st.sidebar.expander("Settings", expanded=False):
     start_date, end_date = st.date_input(
         "Date range",
         min_value=min_date,
@@ -616,7 +689,6 @@ with st.sidebar.expander("Settings", expanded=False):
         key="date_range",
     )
     st.caption("Adjust the time window used across all charts.")
-
     monsoon_only = st.toggle(
         "Monsoon season only (Jul-Sep)",
         key="monsoon_only",
@@ -676,9 +748,108 @@ if monsoon_only:
         f"rainfall_filtered_{scenario_label}_{date_label}_monsoon.csv"
     )
 
-overview_tab, baseline_tab, data_table_tab = st.tabs(
-    ["Overview", "Baseline comparison", "Data table"]
+map_tab, overview_tab, baseline_tab, data_table_tab = st.tabs(
+    ["Map view", "Overview", "Baseline comparison", "Data table"]
 )
+
+with map_tab:
+    section_header("Interactive map")
+    season_label = "Monsoon (Jul-Sep)" if monsoon_only else "Annual"
+    if "show_markers" not in st.session_state:
+        st.session_state["show_markers"] = True
+    if "color_by_province" not in st.session_state:
+        st.session_state["color_by_province"] = compare_by == "Province"
+
+    with st.sidebar.expander("Map tools", expanded=False):
+        if st.button("Reset map", key="reset_map"):
+            st.session_state.pop("map_view_state", None)
+        st.toggle(
+            "Show city markers",
+            key="show_markers",
+        )
+        st.toggle(
+            "Color by province",
+            key="color_by_province",
+            disabled=compare_by != "Province",
+            help="Enable when grouping by province to color points.",
+        )
+
+    map_points = build_map_points(
+        filtered,
+        scenarios,
+        season_label,
+        st.session_state.get("color_by_province", False),
+    )
+
+    if map_points.empty:
+        st.info(
+            "No coordinates available for the selected cities. "
+            "Add latitude/longitude data to your CSV or choose from the sample cities."
+        )
+    else:
+        map_center = (
+            map_points["lat"].mean(),
+            map_points["lon"].mean(),
+        )
+        default_view = pdk.ViewState(
+            latitude=map_center[0],
+            longitude=map_center[1],
+            zoom=4.8,
+            pitch=20,
+        )
+        view_state = st.session_state.get("map_view_state", default_view)
+        if not isinstance(view_state, pdk.ViewState):
+            view_state = default_view
+        st.session_state["map_view_state"] = view_state
+
+        layers = []
+        if st.session_state.get("show_markers", True):
+            layers.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=map_points,
+                    get_position="[lon, lat]",
+                    get_fill_color="color",
+                    get_radius=12000,
+                    pickable=True,
+                    auto_highlight=True,
+                )
+            )
+
+        tooltip = {
+            "html": (
+                "<b>{district_or_city}</b><br/>"
+                "Province: {province}<br/>"
+                "Scenarios: {scenario_label}<br/>"
+                f"Season: {season_label}"
+            ),
+            "style": {
+                "backgroundColor": "#111827",
+                "color": "white",
+                "fontSize": "0.85rem",
+            },
+        }
+
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=layers,
+                initial_view_state=view_state,
+                tooltip=tooltip,
+                map_style="mapbox://styles/mapbox/light-v10",
+            ),
+            use_container_width=True,
+        )
+
+        if st.session_state.get("color_by_province", False):
+            province_order = sorted(map_points["province"].unique())
+            legend_items = [
+                (province, PROVINCE_COLORS[idx % len(PROVINCE_COLORS)])
+                for idx, province in enumerate(province_order)
+            ]
+            st.caption("Province color key")
+            render_color_legend(legend_items)
+        else:
+            st.caption("Markers represent selected cities.")
 
 with overview_tab:
     overview_tables = compute_overview_tables(filtered, filtered_view)
