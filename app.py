@@ -18,7 +18,7 @@ TEMPLATE_COLUMNS = [
     "rainfall_mm",
 ]
 DEFAULTS = {
-    "data_source": "Use sample data",
+    "data_source_mode": "Use sample data",
     "uploaded_file": None,
     "scenarios": [],
     "provinces": [],
@@ -26,8 +26,8 @@ DEFAULTS = {
     "date_range": None,
     "monsoon_only": False,
     "compare_by": "City",
-    "baseline_range": None,
-    "future_range": None,
+    "baseline_years": None,
+    "future_years": None,
 }
 
 st.set_page_config(page_title="Pakistan Rainfall Scenarios", layout="wide")
@@ -421,27 +421,27 @@ def clamp_year_range(
     return clamped_start, clamped_end
 
 
-def coerce_multiselect(
+def ensure_multiselect_state(
     key: str, options: list[str], default: list[str]
-) -> list[str]:
+) -> None:
     if key not in st.session_state:
         st.session_state[key] = list(default)
-        return st.session_state[key]
+        return
 
     current = list(st.session_state.get(key) or [])
     valid = [value for value in current if value in options]
     if not valid and current:
-        valid = list(default)
-    st.session_state[key] = valid
-    return valid
+        st.session_state[key] = list(default)
+    else:
+        st.session_state[key] = valid
 
 
-def coerce_date_range(
+def ensure_date_range_state(
     key: str,
     min_date: pd.Timestamp,
     max_date: pd.Timestamp,
     default: tuple[pd.Timestamp, pd.Timestamp],
-) -> tuple[pd.Timestamp, pd.Timestamp]:
+) -> None:
     current = st.session_state.get(key, default)
     if not isinstance(current, (list, tuple)) or len(current) != 2:
         current = default
@@ -461,15 +461,14 @@ def coerce_date_range(
         end_ts = pd.to_datetime(default[1])
 
     st.session_state[key] = (start_ts.date(), end_ts.date())
-    return st.session_state[key]
 
 
-def coerce_year_range(
+def ensure_year_range_state(
     key: str,
     year_min: int,
     year_max: int,
     default: tuple[int, int],
-) -> tuple[int, int]:
+) -> None:
     current = st.session_state.get(key, default)
     if not isinstance(current, (list, tuple)) or len(current) != 2:
         current = default
@@ -479,11 +478,15 @@ def coerce_year_range(
     if start_year > end_year:
         start_year, end_year = default
     st.session_state[key] = (start_year, end_year)
-    return st.session_state[key]
 
 
-if "data_source" not in st.session_state:
-    st.session_state["data_source"] = DEFAULTS["data_source"]
+if "data_source_mode" not in st.session_state:
+    st.session_state["data_source_mode"] = DEFAULTS["data_source_mode"]
+elif st.session_state["data_source_mode"] not in (
+    "Use sample data",
+    "Upload my CSV",
+):
+    st.session_state["data_source_mode"] = DEFAULTS["data_source_mode"]
 
 reset_clicked = st.sidebar.button("Reset filters", key="reset_filters")
 st.sidebar.caption("Restores defaults and reruns.")
@@ -492,8 +495,7 @@ with st.sidebar.expander("Data source", expanded=True):
     data_source = st.radio(
         "Choose a data source",
         options=("Use sample data", "Upload my CSV"),
-        index=0,
-        key="data_source",
+        key="data_source_mode",
     )
 
     template_rows = [
@@ -555,22 +557,31 @@ DEFAULTS.update(
         "date_range": (min_date, max_date),
         "monsoon_only": False,
         "compare_by": "City",
-        "baseline_range": baseline_default,
-        "future_range": future_default,
+        "baseline_years": baseline_default,
+        "future_years": future_default,
     }
 )
 
 if reset_clicked:
-    for key, value in DEFAULTS.items():
-        st.session_state[key] = value
+    for key in [
+        "scenarios",
+        "provinces",
+        "locations",
+        "compare_by",
+        "monsoon_only",
+        "baseline_years",
+        "future_years",
+        "data_source_mode",
+    ]:
+        st.session_state.pop(key, None)
     st.rerun()
 
-scenarios_default = coerce_multiselect("scenarios", scenario_options, DEFAULTS["scenarios"])
-provinces_default = coerce_multiselect("provinces", province_options, DEFAULTS["provinces"])
-locations_default = coerce_multiselect("locations", location_options, DEFAULTS["locations"])
-coerce_date_range("date_range", min_date, max_date, DEFAULTS["date_range"])
-coerce_year_range("baseline_range", year_min, year_max, DEFAULTS["baseline_range"])
-coerce_year_range("future_range", year_min, year_max, DEFAULTS["future_range"])
+ensure_multiselect_state("scenarios", scenario_options, DEFAULTS["scenarios"])
+ensure_multiselect_state("provinces", province_options, DEFAULTS["provinces"])
+ensure_multiselect_state("locations", location_options, DEFAULTS["locations"])
+ensure_date_range_state("date_range", min_date, max_date, DEFAULTS["date_range"])
+ensure_year_range_state("baseline_years", year_min, year_max, DEFAULTS["baseline_years"])
+ensure_year_range_state("future_years", year_min, year_max, DEFAULTS["future_years"])
 
 if st.session_state.get("compare_by") not in {"City", "Province"}:
     st.session_state["compare_by"] = DEFAULTS["compare_by"]
@@ -581,61 +592,59 @@ with st.sidebar.expander("Filters", expanded=True):
     scenarios = st.multiselect(
         "Scenario",
         options=scenario_options,
-        default=scenarios_default,
         key="scenarios",
     )
+    st.caption("Filter rainfall data by emissions pathway.")
     provinces = st.multiselect(
         "Province",
         options=province_options,
-        default=provinces_default,
         key="provinces",
     )
+    st.caption("Limit results to specific provinces.")
     locations = st.multiselect(
         "Location",
         options=location_options,
-        default=locations_default,
         key="locations",
     )
+    st.caption("Focus on the cities or districts you care about.")
 
+with st.sidebar.expander("Settings", expanded=False):
     start_date, end_date = st.date_input(
         "Date range",
-        value=st.session_state["date_range"],
         min_value=min_date,
         max_value=max_date,
         key="date_range",
     )
+    st.caption("Adjust the time window used across all charts.")
 
     monsoon_only = st.toggle(
         "Monsoon season only (Jul-Sep)",
-        value=st.session_state["monsoon_only"],
         key="monsoon_only",
     )
-
-with st.sidebar.expander("Baseline settings", expanded=False):
+    st.caption("Restrict analysis to monsoon months only.")
     baseline_range = st.slider(
         "Historical baseline years",
         min_value=year_min,
         max_value=year_max,
-        value=st.session_state["baseline_range"],
         step=1,
-        key="baseline_range",
+        key="baseline_years",
     )
+    st.caption("Select the historical window used as the baseline reference.")
     future_range = st.slider(
         "Future scenario years",
         min_value=year_min,
         max_value=year_max,
-        value=st.session_state["future_range"],
         step=1,
-        key="future_range",
+        key="future_years",
     )
-
-with st.sidebar.expander("Advanced", expanded=False):
+    st.caption("Set the future window for scenario comparisons.")
     compare_by = st.radio(
         "Compare by",
         options=["City", "Province"],
         horizontal=True,
         key="compare_by",
     )
+    st.caption("Choose the grouping level for baseline comparisons.")
 
 filtered = apply_filters(
     df,
